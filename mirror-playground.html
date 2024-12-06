@@ -63,6 +63,8 @@
             font-weight: bold;
         }
     </style>
+    <script src="ace.min.js"></script>
+    <script src="mirror.js"></script>
 </head>
 <body>
 
@@ -71,8 +73,6 @@
 <p class="explanation">
     The Mirror programming language powered by programming by example and AI.
 </p>
-
-<input type="text" class="textbox" id="api-key" placeholder="Your throwaway OpenAI API key">
 
 <div class="editor-container">
     <div id="editor-source" class="editor"></div>
@@ -84,7 +84,7 @@
     <button id="button-run">Run</button>
 </div>
 
-<div class="scrollable-box" id="output"></div>
+<div class="scrollable-box" id="output">Output will appear here</div>
 
 <br><div class="status-label" id="status">Status: Ready</div><br><br>
 
@@ -100,100 +100,126 @@
 
 <p>Please submit any improvements to the GitHub <a href="https://github.com/AZHenley/Mirror">repo</a>.</p>
 
-
-
-<script src="https://cdn.jsdelivr.net/npm/ace-builds@1.23.4/src-min-noconflict/ace.min.js"></script>
-<script src="mirror.js"></script>
 <script>
-    var editor1 = ace.edit("editor-source");
-    //editor1.setTheme("ace/theme/monokai");
-    //editor1.session.setMode("ace/mode/javascript");
-    const initialText = `signature foo(x: number, y: number) -> number
+    window.addEventListener("load", function() {
+        // Initialize the editors
+        var editor1 = ace.edit("editor-source");
+        editor1.setTheme("ace/theme/monokai");
+        editor1.session.setMode("ace/mode/javascript");
+        const initialText = `signature foo(x: number, y: number) -> number
 example foo(10, 3) = 101010
 example foo(1, 1) = 1
-example foo(0, 10) = 0
+example foo(7, 4) = 7777
+example foo(10, 2) = 1010
 
 signature bar(x: number) -> string
 example bar(9) = "length is 1"
 example bar(3210) = "length is 4"
 
 bar(foo(123, 3))`;
-    editor1.setValue(initialText);
-    editor1.clearSelection();
-    editor1.moveCursorTo(0, 0);
+        editor1.setValue(initialText);
+        editor1.clearSelection();
+        editor1.moveCursorTo(0, 0);
 
-    var editor2 = ace.edit("editor-intermediate");
-    //editor2.setTheme("ace/theme/monokai");
-    editor2.session.setMode("ace/mode/javascript");
-    editor2.container.style.background = "lightgray";
-    editor2.setReadOnly(true);
+        var editor2 = ace.edit("editor-intermediate");
+        editor2.setTheme("ace/theme/monokai");
+        editor2.session.setMode("ace/mode/javascript");
+        editor2.container.style.background = "lightgray";
+        editor2.setReadOnly(true);
 
-    // Compile button action.
-    document.getElementById("button-compile").addEventListener("click", async function() {
-        const apiKey = document.getElementById("api-key").value;
-        if (!apiKey) {
-            document.getElementById("status").textContent = "Status: Enter your OpenAI API key."
-            return;
-        }
-        document.getElementById("status").textContent = "Status: Compiling...";
-        editor2.setValue("Compiling...")
-
-        // Parse!
-        const code = editor1.getValue();
-        let reorganizedASToutput = "";
-        let expressionsoutput = "";
-        
-        try {
-            // Create a new Mirror parser instance and parse the code.
-            const parser = new MirrorParser(code);
-            const ast = parser.parse();
-            const expressions =  extractExpressions(ast);
-            const reorganizedAST = groupSignaturesWithExamples(ast);
-            
-            // Format the AST as a string and display it in editor2.
-            const ASToutput = JSON.stringify(ast, null, 2);
-            expressionsoutput =  JSON.stringify(expressions)
-            reorganizedASToutput = JSON.stringify(reorganizedAST)
-        
-            // For debugging:
-            // editor2.setValue(ASToutput + "\n\n@@@\n\n" + expressionsoutput + "\n\n@@@\n\n" + reorganizedASToutput);
-            // editor2.clearSelection(); // Clear any selected text.
-
-            document.getElementById("status").textContent = "Status: Code parsed successfully!";
-        } catch (error) {
-            // Display error in editor2 if parsing fails.
-            editor2.setValue("Error: " + error.message);
-            editor2.clearSelection();
-            document.getElementById("status").textContent = "Status: Parsing error!";
-            return;
+        // Function to load available models and populate dropdown
+        async function loadModels() {
+            try {
+                const response = await fetch("http://127.0.0.1:1234/v1/models");
+                const data = await response.json();
+                if (response.ok) {
+                    const modelSelect = document.createElement("select");
+                    modelSelect.id = "model-select";
+                    document.body.insertBefore(modelSelect, document.querySelector(".button-container"));
+                    data.models.forEach(model => {
+                        const option = document.createElement("option");
+                        option.value = model;
+                        option.textContent = model;
+                        modelSelect.appendChild(option);
+                    });
+                } else {
+                    console.error("Failed to fetch models:", data.error?.message);
+                }
+            } catch (error) {
+                console.error("Error fetching models:", error);
+            }
         }
 
-        // Compile!
-        const compiler = new MirrorCompiler();
-        const prompt = "I want you to generate the function body in JavaScript for the function signature that I give you. I will also give you several examples of inputs with the expected results. Do not use any additional libraries. Do not give any explanation. Do not format it as Markdown. Only give the function and the function call expressions afterwards if applicable.\n\n" + reorganizedASToutput + "\n\n" + expressionsoutput;
-        // TODO: This really should make separate calls to OpenAI to generate each function body. Then our code should emit the JS function signature and use the function body from OpenAI. 
-        // TODO: Similarly, the function call expressions should not go to OpenAI. The parser should have a function to emit them.
+        // Load models when the page loads
+        loadModels();
 
-        try {
-            const response = await compiler.callOpenAI(apiKey, prompt);
-            let generatedCode = response;
-            // TODO: We should first verify that the examples do indeed run as specified.
-            editor2.setValue(generatedCode);
-            editor2.clearSelection();
-            document.getElementById("status").textContent = "Status: Response received from OpenAI!";
-        } catch (error) {
-            editor2.setValue("Error: " + error.message);
-            editor2.clearSelection();
-            document.getElementById("status").textContent = "Status: API call error!";
-        }
-    });
+        // Compile button action
+        document.getElementById("button-compile").addEventListener("click", async function() {
+            document.getElementById("status").textContent = "Status: Compiling...";
+            editor2.setValue("Compiling...");
 
-    // Run button action.
-    document.getElementById("button-run").addEventListener("click", async function() {
-        let jscode = editor2.getValue();
-        document.getElementById("output").textContent = eval(jscode);
-        document.getElementById("status").textContent = "Status: Executed successfully!";
-        // TODO: This will only print the last result. Should we instead print the return value from every function call made by the user (not made by the generated functions)?
+            // Parse the code
+            const code = editor1.getValue();
+            let reorganizedASToutput = "";
+            let expressionsoutput = "";
+
+            try {
+                // Parse the code
+                const parser = new MirrorParser(code);
+                const ast = parser.parse();
+                const expressions = extractExpressions(ast);
+                const reorganizedAST = groupSignaturesWithExamples(ast);
+
+                // Format the AST as a string and display it in editor2.
+                const ASToutput = JSON.stringify(ast, null, 2);
+                reorganizedASToutput = JSON.stringify(reorganizedAST);
+                expressionsoutput = JSON.stringify(expressions);
+
+                // For debugging:
+                // editor2.setValue(ASToutput + "\n\n@@@\n\n" + expressionsoutput + "\n\n@@@\n\n" + reorganizedASToutput);
+                // editor2.clearSelection(); // Clear any selected text.
+
+                document.getElementById("status").textContent = "Status: Code parsed successfully!";
+            } catch (error) {
+                // Display error in editor2 if parsing fails.
+                editor2.setValue("Error: " + error.message);
+                editor2.clearSelection();
+                document.getElementById("status").textContent = "Status: Parsing error!";
+                return;
+            }
+
+            // Get selected model from the dropdown
+            const model = document.getElementById("model-select")?.value || "tinyllama-claude";
+
+            // Compile using the local API
+            const compiler = new MirrorCompiler(model);
+            const prompt = "I want you to generate the function body in JavaScript for the function signature that I give you. I will also give you several examples of inputs with the expected results. Do not use any additional libraries. Do not give any explanation. Do not format it as Markdown. Only give the function and the function call expressions afterwards if applicable. Do not include any extaneous text.\n\n" + reorganizedASToutput + "\n\n" + expressionsoutput;
+
+            try {
+                const response = await compiler.callLocalLLM(prompt);
+                let generatedCode = response;
+                editor2.setValue(generatedCode);
+                editor2.clearSelection();
+                document.getElementById("status").textContent = "Status: Response received from Local API!";
+            } catch (error) {
+                editor2.setValue("Error: " + error.message);
+                editor2.clearSelection();
+                document.getElementById("status").textContent = "Status: API call error!";
+            }
+        });
+
+        // Run button action
+        document.getElementById("button-run").addEventListener("click", async function() {
+            let jscode = editor2.getValue();
+            try {
+                let result = eval(jscode);
+                document.getElementById("output").textContent = result;
+                document.getElementById("status").textContent = "Status: Executed successfully!";
+            } catch (error) {
+                document.getElementById("output").textContent = "Execution error: " + error.message;
+                document.getElementById("status").textContent = "Status: Execution error!";
+            }
+        });
     });
 </script>
 </body>

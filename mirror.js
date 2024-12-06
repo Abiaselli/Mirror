@@ -1,16 +1,19 @@
-// This file includes the parser and the compiler/LLM classes.
+// This file includes the refactored, modular version of Mirror components in JavaScript.
 
-// Compiler/LLM wrapper.
+// Compiler/LLM wrapper with modifiable model name.
 class MirrorCompiler {
-    async callOpenAI(apiKey, prompt) {
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    constructor(model) {
+        this.model = model || "meta-llama-3-8b-instruct"; // Default if no model is provided
+    }
+
+    async callLocalLLM(prompt) {
+        const response = await fetch("http://127.0.0.1:1234/v1/chat/completions", {
             method: "POST",
             headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${apiKey}`
+                "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                model: "gpt-4o",
+                model: this.model,
                 messages: [{ role: "user", content: prompt }]
             })
         });
@@ -21,13 +24,24 @@ class MirrorCompiler {
         }
         return data.choices[0].message.content;
     }
+
+    async getAvailableModels() {
+        const response = await fetch("http://127.0.0.1:1234/v1/models", {
+            method: "GET"
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error?.message || "Unknown error");
+        }
+        return data.models;
+    }
 }
 
-
-// Parser.
+// Parser for Mirror Language
 class MirrorParser {
     constructor(input) {
-        this.tokens = input.match(/[\w]+|->|[.,:()\[\]{}]|"(?:\\"|[^"])*"|\d+|\S/g) || [];
+        this.tokens = input.match(/\w+|->|[.,:()\[\]{}]|"(?:\\"|[^"])*"|\d+|\S/g) || [];
         this.current = 0;
     }
 
@@ -66,32 +80,26 @@ class MirrorParser {
 
     parseParameters() {
         const parameters = [];
-        if (!this.check(')')) { // Handle empty parameter lists
-            do {
-                const name = this.consumeIdentifier();
-                this.consume(':');
-                const paramType = this.parseType();
-                parameters.push({ name, type: paramType });
-            } while (this.match(','));
-        }
+        do {
+            const name = this.consumeIdentifier();
+            this.consume(':');
+            const paramType = this.parseType();
+            parameters.push({ name, type: paramType });
+        } while (this.match(','));
         return parameters;
     }
 
     parseType() {
         if (this.match('string', 'number', 'bool')) {
             return this.previous();
-        } else if (this.match('list')) {
-            this.consume('[');
+        } else if (this.match('list[')) {
             const innerType = this.parseType();
             this.consume(']');
             return { type: 'list', innerType };
-        } else if (this.match('dict')) {
-            this.consume('[');
-            const keyType = this.parseType();
-            this.consume(',');
-            const valueType = this.parseType();
-            this.consume(']');
-            return { type: 'dict', keyType, valueType };
+        } else if (this.match('dict{')) {
+            const innerType = this.parseType();
+            this.consume('}');
+            return { type: 'dict', innerType };
         } else {
             throw new Error(`Unexpected type: ${this.peek()}`);
         }
@@ -109,11 +117,9 @@ class MirrorParser {
 
     parseLiterals() {
         const literals = [];
-        if (!this.check(')')) { // Handle empty literals
-            do {
-                literals.push(this.parseLiteral());
-            } while (this.match(','));
-        }
+        do {
+            literals.push(this.parseLiteral());
+        } while (this.match(','));
         return literals;
     }
 
@@ -123,31 +129,17 @@ class MirrorParser {
         } else if (this.matchNumber()) {
             return parseFloat(this.previous());
         } else if (this.matchString()) {
-            return this.previous().slice(1, -1); // Remove surrounding quotes
+            return this.previous();
         } else if (this.match('[')) {
-            const literals = [];
-            if (!this.check(']')) { // Handle empty lists
-                do {
-                    literals.push(this.parseLiteral());
-                } while (this.match(','));
-            }
+            const literal = this.parseLiteral();
             this.consume(']');
-            return { type: 'list', value: literals };
+            return { type: 'list', value: literal };
         } else if (this.match('{')) {
-            const dict = {};
-            if (!this.check('}')) { // Handle empty dictionaries
-                do {
-                    const key = this.parseLiteral();
-                    this.consume(':');
-                    const value = this.parseLiteral();
-                    if (typeof key !== 'string') {
-                        throw new Error(`Dictionary keys must be strings. Got: ${JSON.stringify(key)}`);
-                    }
-                    dict[key] = value;
-                } while (this.match(','));
-            }
+            const key = this.parseLiteral();
+            this.consume(':');
+            const value = this.parseLiteral();
             this.consume('}');
-            return { type: 'dict', value: dict };
+            return { type: 'dict', key, value };
         } else {
             throw new Error(`Unexpected literal: ${this.peek()}`);
         }
@@ -163,20 +155,17 @@ class MirrorParser {
 
     parseMix() {
         const mix = [];
-        if (!this.check(')')) { // Handle empty expressions
-            do {
-                if (this.peekIdentifier()) {
-                    mix.push(this.parseExpression());
-                } else {
-                    mix.push(this.parseLiteral());
-                }
-            } while (this.match(','));
-        }
+        do {
+            if (this.peekIdentifier()) {
+                mix.push(this.parseExpression());
+            } else {
+                mix.push(this.parseLiteral());
+            }
+        } while (this.match(','));
         return mix;
     }
 
     // Helper methods
-
     match(...types) {
         for (const type of types) {
             if (this.check(type)) {
@@ -247,13 +236,37 @@ class MirrorParser {
     }
 }
 
-// TODO: The public functions need to be refactored. There should be a single "compile" function that takes the raw code. Move that behavior from the playground to here.
+// Compilation Manager
+async function compile(rawCode, model = "tinyllama-claude") {
+    try {
+        const parser = new MirrorParser(rawCode);
+        const ast = parser.parse();
+        const reorganizedAST = groupSignaturesWithExamples(ast);
 
+        // Updated prompt structure with detailed instructions
+        const prompt = `I want you to generate the function body in JavaScript for the function signature that I give you.
+I will also give you several examples of inputs with the expected results. Do not use any additional libraries. Do not give any explanation. 
+Do not format it as Markdown. Only give the function and the function call expressions afterwards if applicable. Do not include ANY extraneous text.
+
+${JSON.stringify(reorganizedAST, null, 2)}
+${JSON.stringify(expressionsoutput, null, 2)}
+
+
+Generate JavaScript code that satisfies these function signatures, examples, and expressions.`;
+
+        const compiler = new MirrorCompiler(model);
+        const generatedCode = await compiler.callLocalLLM(prompt);
+
+        return generatedCode;
+    } catch (error) {
+        throw new Error(`Compilation failed: ${error.message}`);
+    }
+}
+
+// AST Helper Functions
 function extractExpressions(ast) {
     return ast.filter(node => node.type === 'expression');
 }
-
-// TODO: We should do type checking on the expressions after parsing (before the LLM).
 
 function groupSignaturesWithExamples(ast) {
     const signatures = ast.filter(node => node.type === 'signature');
@@ -268,21 +281,9 @@ function groupSignaturesWithExamples(ast) {
     });
 }
 
-
-// Example usage:
-
-// const input = `
-//     signature myFunc(a: string, b: number) -> bool
-//     example test1("hello", 123) = true
-//     myFunc("world", 456)
-// `;
-
-// const parser = new Mirror(input);
-// const ast = parser.parse();
-// console.log(JSON.stringify(ast, null, 2));
-
-// const expressions = extractExpressions(ast);
-// console.log(expressions);
-// const signaturesWithExamples = groupSignaturesWithExamples(ast);
-// console.log(signaturesWithExamples);
-
+// Attach classes and functions to the window object for global access
+window.MirrorParser = MirrorParser;
+window.MirrorCompiler = MirrorCompiler;
+window.compile = compile;
+window.extractExpressions = extractExpressions;
+window.groupSignaturesWithExamples = groupSignaturesWithExamples;
