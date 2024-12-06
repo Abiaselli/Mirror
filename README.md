@@ -1,4 +1,4 @@
-# Mirror: An LLM-powered programming-by-example programming language.
+# Mirror: An LLM-powered programming-by-example programming language. (modified to be compatible with LM Studio)
 
 For more details, see the [blog post](https://austinhenley.com/blog/mirrorlang.html).
 
